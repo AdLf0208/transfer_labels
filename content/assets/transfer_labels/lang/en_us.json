@@ -1,0 +1,14 @@
+{
+  "item.transfer_labels.itemstack_extract_transfer_label": "Itemstack Extract Transfer Label",
+  "itemGroup.transfer_labels": "Transfer Labels",
+  "tooltip.transfer_labels.blacklist": "Blacklist",
+  "tooltip.transfer_labels.whitelist": "Whitelist",
+  "tooltip.transfer_labels.slot.amount": "Amount",
+  "tooltip.transfer_labels.slot.speed": "Speed",
+  "filter.type.normal": "Normal Filter",
+  "filter.type.normal.tooltip": "Transfer only if it is the same as the filter",
+  "filter.type.regulating": "Regulating Filter",
+  "filter.type.regulating.tooltip": "Transfer to keep the defined filter amount on the destination",
+  "filter.type.mod": "Mod Filter",
+  "filter.type.mod.tooltip": "Transfer only if it has the same mod id as the defined filter"
+}

@@ -1,0 +1,17 @@
+[package]
+# Ported from: Transfer Labels 0.1.9 (Buuz135/Transfer-Labels, MIT),
+# Minecraft Java 1.21.1 NeoForge. Local-only until the maintainer approves.
+name = "horizon-transfer-labels"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "Transfer Labels for Horizon: a label on a block face moves items between two containers"
+
+[lib]
+# This exact source is also injected as a same-crate module by horizon-mixins.
+path = "mixins/transfer_labels/runtime.rs"
+
+[workspace]
+members = ["tools/audit"]
+resolver = "2"

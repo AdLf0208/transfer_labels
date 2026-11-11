@@ -1,0 +1,9 @@
+# Port-owned content mod for the Transfer Labels 0.1.9 slice: the item-stack
+# extract label. The model, texture and lang keys are upstream's own MIT assets,
+# read from the exact ATM10 jar (see ../FINDINGS.md §1).
+id = "transfer_labels"
+name = "Transfer Labels"
+version = "0.1.0"
+api = "0.2"
+side = "both"
+capabilities = ["registries"]

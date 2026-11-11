@@ -1,0 +1,120 @@
+[mod]
+id = "transfer_labels"
+version = "0.1.0"
+priority = 100
+
+[compatibility]
+horizon_revision = "1d63e0a5a37a7a708eb0b32b49bf0dfeb28ed8a9"
+
+# The pure label rules (standalone crate lib, injected as
+# `crate::game::transfer_labels`): the rate, the amount, the filter and the
+# regulating budget, the block pair a label joins, the saved text and the
+# command grammar.
+[[module]]
+id = "runtime"
+file = "crates/horizon-client/src/game.rs"
+name = "transfer_labels"
+source = "runtime.rs"
+
+# Game-side glue: the level attachment that holds the labels, the tick, the
+# attach/remove clicks and `/transfer_labels`.
+[[module]]
+id = "state"
+file = "crates/horizon-client/src/game.rs"
+name = "transfer_labels_state"
+source = "support.rs"
+
+# The content half is inside this bundle (`data/transfer_labels-content.hmod`,
+# the built `content/transfer_labels.hmod`): this writes it to `.horizon-cache/`
+# and appends it to the dev-mod list, so one `.hnmod` installs the item and the
+# code. The registry keeps one file per project, so a split port could not be
+# listed; AE2 ships the same pattern.
+[[injection]]
+id = "embedded-content"
+kind = "HEAD"
+cancellable = true
+target = "horizon_client::game::mods::content_root"
+helper = "embedded_content.rs"
+bindings = [
+  { name = "root", ty = "&std::path::Path", value = "root" },
+  { name = "enabled", ty = "&std::collections::BTreeSet<String>", value = "enabled" },
+  { name = "dev", ty = "&[std::path::PathBuf]", value = "dev" },
+]
+
+# A server level starts a tick (API 4): every due label in it moves its items.
+[[injection]]
+id = "level-tick"
+hook = "level_tick_pre"
+hook_version = 1
+kind = "HEAD"
+helper = "level_tick_pre.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "dimension", ty = "&str", value = "dimension" },
+]
+
+# A player right clicks a block with the label item in hand (API 21): the label
+# sticks to that face, one item is used up, and the click stops there.
+[[injection]]
+id = "right-click-block"
+hook = "right_click_block"
+hook_version = 1
+kind = "HEAD"
+helper = "right_click_block.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "pos", ty = "[i32; 3]", value = "pos" },
+  { name = "face", ty = "[i32; 3]", value = "face" },
+  { name = "canceled", ty = "&mut bool", value = "canceled" },
+]
+
+# A player left clicks a labelled face with the label item in hand (API 30):
+# the label comes off with the copies its upgrades held, and the block survives.
+[[injection]]
+id = "left-click-block"
+hook = "left_click_block"
+hook_version = 1
+kind = "HEAD"
+helper = "left_click_block.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "pos", ty = "[i32; 3]", value = "pos" },
+  { name = "face", ty = "[i32; 3]", value = "face" },
+  { name = "canceled", ty = "&mut bool", value = "canceled" },
+]
+
+# The command's name, so the chat box completes and colours it (API 1).
+[[injection]]
+id = "commands"
+hook = "commands"
+hook_version = 1
+kind = "HEAD"
+helper = "commands.rs"
+bindings = [
+  { name = "commands", ty = "&mut Vec<&'static str>", value = "commands" },
+]
+
+# `/transfer_labels …`, declared (API 8) ...
+[[injection]]
+id = "register-commands"
+hook = "register_commands"
+hook_version = 1
+kind = "HEAD"
+helper = "register_commands.rs"
+bindings = [
+  { name = "commands", ty = "&mut Vec<NativeCommand>", value = "commands" },
+]
+
+# ... and run (API 8).
+[[injection]]
+id = "perform-command"
+hook = "perform_command"
+hook_version = 1
+kind = "HEAD"
+helper = "perform_command.rs"
+bindings = [
+  { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
+  { name = "player", ty = "&NativeServerPlayer", value = "player" },
+  { name = "command", ty = "&str", value = "command" },
+  { name = "ran", ty = "&mut bool", value = "ran" },
+]
