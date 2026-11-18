@@ -1,15 +1,19 @@
-# Transfer Labels for Horizon
+# Transfer Labels — a Horizon port
 
-A Horizon native port of [Transfer Labels](https://github.com/Buuz135/Transfer-Labels)
-by Buuz135 (MIT), Minecraft Java 1.21.1 NeoForge → Horizon (Minecraft 26.3).
+**Transfer Labels** is a Minecraft mod. This repository is a **port of it to [Horizon](https://github.com/horizon-rust/horizon)**, the Rust engine for Minecraft Java 26.3. It carries the complete source of the port plus the content files it ships, and installs as a single `.hmod` package.
 
-A label sticks to a block face and, on its own tick, moves items between the
-block it is attached to and the block on the other side of that face.
+Upstream: [Buuz135/Transfer-Labels](https://github.com/Buuz135/Transfer-Labels) — licence **MIT**.
 
-This is a **flat SDK package** (mod API `0.2`): one `.hmod` carries the code
-(`src/`) and the item's content (`assets/`, `data/`) together.
+| | |
+|---|---|
+| Upstream mod | Transfer Labels ([source](https://github.com/Buuz135/Transfer-Labels)) |
+| Ported to | Horizon 0b14f8a, Minecraft Java 26.3, mod API `0.2` |
+| Package | `transfer_labels.hmod` (install it with the Horizon launcher) |
+| Licence | **MIT** — the upstream mod's licence; see [Licence and credit](#licence-and-credit) |
 
-## What this port does (slice 1)
+## What this port implements
+
+### What this port does (slice 1)
 
 - **`transfer_labels:itemstack_extract_transfer_label`** — craft it (hopper,
   wooden chest, redstone), right-click a block face with it to attach it, and it
@@ -22,59 +26,42 @@ This is a **flat SDK package** (mod API `0.2`): one `.hmod` carries the code
 - Labels are level state, saved with the world.
 - Left-click a label with the label item in hand to take it back.
 
-## Commands
+## Not yet ported
 
-```
-/transfer_labels list
-/transfer_labels info   <x> <y> <z> <face>
-/transfer_labels filter <x> <y> <z> <face> <whitelist|blacklist>
-/transfer_labels type   <x> <y> <z> <face> <normal|regulating|mod>
-/transfer_labels entry  <x> <y> <z> <face> <slot 0..19> <item> [count]
-/transfer_labels clear  <x> <y> <z> <face> <slot>
-/transfer_labels amount <x> <y> <z> <face> <0..63>
-/transfer_labels speed  <x> <y> <z> <face> <0..38>
-/transfer_labels remove <x> <y> <z> <face>
-```
-
-## Not in this slice
-
-The insert label, the four fluid labels, the filter GUI and the amount/speed
-upgrade slots, and the `exact_count`/`tag` filter kinds — see
-[`notes.md`](notes.md) for each gap and why it is one.
+- **No in-game run at `0b14f8a`.** There is no `horizon-launcher` on this box, so the package cannot
+- **No log service in the SDK**, so the retired bundle's `[transfer_labels] …` lines are gone; the
+- The slice's own gaps are unchanged: the insert label and the four fluid labels, the menu/screen
 
 ## Installing
 
-One file: `transfer_labels.hmod`. The launcher builds it against the game build
-its manifest pins (`[native]` in `horizon-mod.toml`).
+1. Install the [Horizon launcher](https://github.com/horizon-rust/horizon/releases) (0.2.70 or newer).
+2. Add `transfer_labels.hmod` to the instance's mods.
+3. The package is pinned to a specific Horizon build; the launcher checks that pin.
 
-## Layout
+## Licence and credit
 
-| Path | What |
-|---|---|
-| `horizon-mod.toml` | the only manifest and the only identity: id, version, `api = "0.2"`, side, capabilities, the `[native]` pins |
-| `Cargo.toml` | one crate; its only dependency is `horizon-mod-api` from the SDK the tool fetches into `.horizon/` |
-| `src/runtime.rs` | the pure rules (rate, amount, filter, saved text, command grammar) and their 28 tests |
-| `src/lib.rs` | the one `impl mod_api::Hooks`: the level tick, the two clicks, the command |
-| `assets/`, `data/` | the item, its model/texture/lang, recipe, creative tab and tag |
-| `tools/e2e.sh`, `tools/parse_info.py` | the in-game scenario and its reply parser |
-| `FINDINGS.md` | what the jar and the upstream source contain |
-| `notes.md` | scope, gaps, hooks, the migration recipe, verification |
+Transfer Labels was created by its upstream authors; the code, models and assets in the original mod
+remain theirs and are used here under **MIT**. The Rust in this repository is a clean-room
+rewrite for Horizon, not a translation of the original source.
 
-## Building
+- `LICENSE` — the upstream licence text.
+- `LICENSE-NOTICE.md` — what this port carries and where it came from.
+- The upstream project: https://github.com/Buuz135/Transfer-Labels
 
-```sh
-ports/tools/build-slot.sh run --job sdk-tl --port ports/transfer_labels --step test \
-    -- bash -c 'cd ports/transfer_labels && cargo test --offline'
-ports/tools/build-slot.sh run --job sdk-tl --port ports/transfer_labels --step build \
-    -- bash -c 'cd ports/transfer_labels && cargo horizon-mod build'
-ports/tools/build-slot.sh run --job sdk-tl --port ports/transfer_labels --step check \
-    -- bash -c 'cd ports/transfer_labels && cargo horizon-mod check transfer_labels.hmod'
+## Technical details
+
+```
+horizon-mod.toml   package manifest (id, version, api, [native] pin)
+Cargo.toml         the crate; depends on `horizon-mod-api` from the fetched SDK
+src/               lib.rs (the one `impl Hooks`), runtime.rs (pure logic + tests), glue
+assets/ data/      the content the package ships
+tools/             content generators and the e2e scenario
 ```
 
-`cargo horizon-mod` fetches the pinned SDK into `.horizon/sdk/` on first use; the
-delivered file is `transfer_labels.hmod` in this folder, built and checked.
+- Build: `cargo horizon-mod build` (packages; it does not compile against the game).
+- Test: `cargo test`, `cargo clippy --all-targets -- -D warnings`.
+- In-game: `ports/tools/launcher-game.sh run transfer_labels` in the campaign tree, or install the
+  `.hmod` and play; the harness scenario is `tools/e2e.sh`.
 
-## Licence
-
-MIT (see `LICENSE`, `LICENSE-NOTICE.md`, both inside the package). Local-only
-until the maintainer approves publishing.
+This repository is generated from the campaign's port at `ports/transfer_labels/`; the port's own
+`notes.md` is the full record (decisions, traps, evidence).
