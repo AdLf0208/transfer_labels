@@ -9,9 +9,13 @@
 
 use std::collections::BTreeMap;
 
-/// The label item this slice carries (`com.buuz135.transfer_labels.item.ItemStackTransferLabelItem`,
-/// EXTRACT mode).
-pub const LABEL_ITEM: &str = "transfer_labels:itemstack_extract_transfer_label";
+/// The item that pulls items out of the block it is stuck to
+/// (`ItemStackExtractTransferLabelItem`).
+pub const EXTRACT_LABEL_ITEM: &str = "transfer_labels:itemstack_extract_transfer_label";
+
+/// The item that pushes items into the block it is stuck to
+/// (`ItemStackInsertTransferLabelItem`).
+pub const INSERT_LABEL_ITEM: &str = "transfer_labels:itemstack_insert_transfer_label";
 
 /// `Config.baseItemTransferAmount`: items moved per activation with no upgrade.
 pub const BASE_ITEM_TRANSFER_AMOUNT: u32 = 1;
@@ -150,18 +154,104 @@ pub struct FilterEntry {
     pub count: u32,
 }
 
+/// The two label items a player can attach: which way the label moves items.
+///
+/// Upstream has two item classes for the two directions
+/// (`ItemStackExtractTransferLabelItem` / `ItemStackInsertTransferLabelItem`); the
+/// port keeps the direction on the label and takes it from the item that was
+/// clicked, so one store and one tick serve both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LabelFlow {
+    /// `itemstack_extract_transfer_label`: labelled block → the block across the face.
+    Extract,
+    /// `itemstack_insert_transfer_label`: the block across the face → labelled block.
+    Insert,
+}
+
+impl LabelFlow {
+    /// The flow's lower-case name, as the saved text and `/transfer_labels` spell it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Extract => "extract",
+            Self::Insert => "insert",
+        }
+    }
+    /// The flow `name` names, if it names one.
+    pub fn parse(name: &str) -> Option<LabelFlow> {
+        match name {
+            "extract" => Some(Self::Extract),
+            "insert" => Some(Self::Insert),
+            _ => None,
+        }
+    }
+    /// The item that attaches this flow.
+    pub fn item_id(self) -> &'static str {
+        match self {
+            Self::Extract => EXTRACT_LABEL_ITEM,
+            Self::Insert => INSERT_LABEL_ITEM,
+        }
+    }
+    /// The flow `item` attaches, or `None` for an item that is not a label.
+    pub fn of_item(item: &str) -> Option<LabelFlow> {
+        [Self::Extract, Self::Insert]
+            .into_iter()
+            .find(|flow| flow.item_id() == item)
+    }
+}
+
+/// One end of the pair a label joins: the block and the side it is reached through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Endpoint {
+    pub pos: [i32; 3],
+    pub face: Face,
+}
+
 /// Everything a label carries besides where it sits: its filter and its two
 /// upgrades (`LabelInstance`'s `filter`, `amountFilter`, `speedFilter`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LabelConfig {
+    /// Which way this label moves items, from the item it was attached with.
+    pub flow: LabelFlow,
     pub mode: FilterMode,
     pub kind: FilterKind,
     /// `amountFilter`'s stack count: copies of the label item put into it.
     pub amount_upgrades: u32,
     /// `speedFilter`'s stack count.
     pub speed_upgrades: u32,
+    /// How many of `amount_upgrades` a player actually paid for. Only a paid upgrade is
+    /// handed back when the label comes off; an upgrade the harness command set for
+    /// free was never an item and must not mint one.
+    pub paid_amount: u32,
+    /// How many of `speed_upgrades` a player paid for.
+    pub paid_speed: u32,
     /// `Config.filterSlots` slots, each naming one item.
     pub entries: Vec<Option<FilterEntry>>,
+}
+
+/// The most label lines one `/transfer_labels list` prints: a level can hold any number of
+/// labels, and one reply per label would flood the chat of a large world.
+pub const LIST_PAGE_SIZE: usize = 16;
+
+/// The `[start, end)` window of a level's labels that page `page` (0-based) prints, clamped to
+/// `total`. A page past the end is empty, never out of range.
+pub fn list_page(total: usize, page: usize) -> (usize, usize) {
+    let start = page.saturating_mul(LIST_PAGE_SIZE).min(total);
+    let end = start.saturating_add(LIST_PAGE_SIZE).min(total);
+    (start, end)
+}
+
+/// `Player.canInteractWithBlock(pos, 0.0)`: whether the eye is within `reach` of the block's
+/// centre. A command that edits a label for a player asks this first, so a label across the
+/// level is not theirs to change.
+pub fn within_reach(eye: [f64; 3], block: [i32; 3], reach: f64) -> bool {
+    let centre = [
+        f64::from(block[0]) + 0.5,
+        f64::from(block[1]) + 0.5,
+        f64::from(block[2]) + 0.5,
+    ];
+    let distance =
+        (eye[0] - centre[0]).powi(2) + (eye[1] - centre[1]).powi(2) + (eye[2] - centre[2]).powi(2);
+    distance <= reach * reach
 }
 
 impl Default for LabelConfig {
@@ -169,12 +259,78 @@ impl Default for LabelConfig {
     /// so a label just placed moves everything.
     fn default() -> Self {
         Self {
+            flow: LabelFlow::Extract,
             mode: FilterMode::Blacklist,
             kind: FilterKind::Normal,
             amount_upgrades: 0,
             speed_upgrades: 0,
+            paid_amount: 0,
+            paid_speed: 0,
             entries: vec![None; FILTER_SLOTS],
         }
+    }
+}
+
+impl LabelConfig {
+    /// A label of `flow` just attached: upstream's `new ItemFilter(...)` for that
+    /// label item — a blacklist with `normal` matching and no entries.
+    pub fn of(flow: LabelFlow) -> Self {
+        Self {
+            flow,
+            ..Self::default()
+        }
+    }
+
+    /// The label item this label was attached with, and the one a removal hands back.
+    pub fn refund_item(&self) -> &'static str {
+        self.flow.item_id()
+    }
+
+    /// Sets the amount upgrades a label runs with (the command's control). The paid count
+    /// follows down when the count drops below it, so a label never refunds more than it
+    /// still holds; setting more than was paid leaves the paid count alone, because the
+    /// extra copies were never items.
+    pub fn set_amount(&mut self, amount: u32) {
+        self.amount_upgrades = amount.min(AMOUNT_UPGRADES);
+        self.paid_amount = self.paid_amount.min(self.amount_upgrades);
+    }
+
+    /// Sets the speed upgrades a label runs with, under the same rule as [`set_amount`].
+    ///
+    /// [`set_amount`]: Self::set_amount
+    pub fn set_speed(&mut self, speed: u32) {
+        self.speed_upgrades = speed.min(SPEED_UPGRADES);
+        self.paid_speed = self.paid_speed.min(self.speed_upgrades);
+    }
+
+    /// An amount upgrade the player put in: the count and the paid count both grow.
+    pub fn pay_amount(&mut self, count: u32) {
+        self.amount_upgrades = self
+            .amount_upgrades
+            .saturating_add(count)
+            .min(AMOUNT_UPGRADES);
+        self.paid_amount = self
+            .paid_amount
+            .saturating_add(count)
+            .min(self.amount_upgrades);
+    }
+
+    /// A speed upgrade the player put in.
+    pub fn pay_speed(&mut self, count: u32) {
+        self.speed_upgrades = self
+            .speed_upgrades
+            .saturating_add(count)
+            .min(SPEED_UPGRADES);
+        self.paid_speed = self
+            .paid_speed
+            .saturating_add(count)
+            .min(self.speed_upgrades);
+    }
+
+    /// The label items taking this label off hands back: the label itself plus only the
+    /// upgrades it still runs with and that a player paid for.
+    pub fn refund_items(&self) -> u32 {
+        1 + self.amount_upgrades.min(self.paid_amount) + self.speed_upgrades.min(self.paid_speed)
     }
 }
 
@@ -249,11 +405,14 @@ impl LabelConfig {
     /// The label's saved text: one `key=value` line each, the entries by slot.
     pub fn encode(&self) -> String {
         let mut text = format!(
-            "mode={}\nkind={}\namount={}\nspeed={}",
+            "mode={}\nkind={}\nflow={}\namount={}\nspeed={}\npaid_amount={}\npaid_speed={}",
             self.mode.name(),
             self.kind.name(),
+            self.flow.name(),
             self.amount_upgrades,
-            self.speed_upgrades
+            self.speed_upgrades,
+            self.paid_amount,
+            self.paid_speed
         );
         for (slot, entry) in self.entries.iter().enumerate() {
             if let Some(entry) = entry {
@@ -266,6 +425,7 @@ impl LabelConfig {
     /// text this version cannot read whole.
     pub fn decode(text: &str) -> Option<LabelConfig> {
         let mut label = LabelConfig::default();
+        let mut paid_seen = false;
         if text.is_empty() {
             return None;
         }
@@ -274,8 +434,20 @@ impl LabelConfig {
             match key {
                 "mode" => label.mode = FilterMode::parse(value)?,
                 "kind" => label.kind = FilterKind::parse(value)?,
+                // A text written before the insert label existed has no `flow`: the
+                // item that was attached then was the extract label, which stays the
+                // default, so an old save keeps working unchanged.
+                "flow" => label.flow = LabelFlow::parse(value)?,
                 "amount" => label.amount_upgrades = value.parse().ok()?,
                 "speed" => label.speed_upgrades = value.parse().ok()?,
+                "paid_amount" => {
+                    label.paid_amount = value.parse().ok()?;
+                    paid_seen = true;
+                }
+                "paid_speed" => {
+                    label.paid_speed = value.parse().ok()?;
+                    paid_seen = true;
+                }
                 _ => {
                     let slot: usize = key.strip_prefix("slot")?.parse().ok()?;
                     let (item, count) = value.rsplit_once(',')?;
@@ -289,6 +461,12 @@ impl LabelConfig {
                     });
                 }
             }
+        }
+        if !paid_seen {
+            // A 0.2.0 text named no paid counts: its upgrades were items the player put in
+            // before the command could set them, so they stay refundable.
+            label.paid_amount = label.amount_upgrades;
+            label.paid_speed = label.speed_upgrades;
         }
         Some(label)
     }
@@ -358,6 +536,25 @@ impl LabelKey {
     pub fn to_face(&self) -> Face {
         self.face.opposite()
     }
+    /// `ItemFilter.work`: the two blocks a label joins, as (source, destination).
+    ///
+    /// An `Extract` label takes from the block it is stuck to and gives to the block
+    /// across the face; an `Insert` label is the same pair with the roles swapped, so
+    /// its destination is the labelled block itself.
+    pub fn endpoints(self, flow: LabelFlow) -> (Endpoint, Endpoint) {
+        let labelled = Endpoint {
+            pos: self.pos,
+            face: self.from_face(),
+        };
+        let neighbour = Endpoint {
+            pos: self.target(),
+            face: self.to_face(),
+        };
+        match flow {
+            LabelFlow::Extract => (labelled, neighbour),
+            LabelFlow::Insert => (neighbour, labelled),
+        }
+    }
 }
 
 /// Every label in one level (`LabelStorage`, as a level attachment).
@@ -416,7 +613,12 @@ impl LabelStore {
 /// `/transfer_labels …`: what a player asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
-    List,
+    /// `/transfer_labels list [page]`: one page of the level's labels (1-based; the first
+    /// page when no number is given). A level can hold any number of labels, so a single
+    /// invocation never prints them all.
+    List {
+        page: usize,
+    },
     Info {
         key: LabelKey,
     },
@@ -460,7 +662,23 @@ impl Command {
         }
         let (sub, rest) = rest.split_first().ok_or_else(usage)?;
         match *sub {
-            "list" => Ok(Command::List),
+            "list" => {
+                let page = match rest.first() {
+                    Some(number) => {
+                        number
+                            .parse::<usize>()
+                            .ok()
+                            .filter(|page| *page > 0)
+                            .ok_or_else(usage)?
+                            - 1
+                    }
+                    None => 0,
+                };
+                if rest.len() > 1 {
+                    return Err(usage());
+                }
+                Ok(Command::List { page })
+            }
             "info" => Ok(Command::Info {
                 key: key_from(rest)?,
             }),
@@ -1038,8 +1256,15 @@ mod tests {
         );
         assert_eq!(
             Command::parse(&words("transfer_labels list")),
-            Ok(Command::List)
+            Ok(Command::List { page: 0 })
         );
+        assert_eq!(
+            Command::parse(&words("transfer_labels list 3")),
+            Ok(Command::List { page: 2 }),
+            "the command's pages are 1-based"
+        );
+        assert!(Command::parse(&words("transfer_labels list 0")).is_err());
+        assert!(Command::parse(&words("transfer_labels list many")).is_err());
     }
 
     #[test]
@@ -1059,6 +1284,87 @@ mod tests {
         assert!(Command::parse(&words("somethingelse list")).is_err());
     }
 
+    // --- what coming off a label hands back (review 2026-11-18) ---
+
+    #[test]
+    fn only_upgrades_that_were_paid_for_come_back_with_the_label() {
+        // The harness command sets amount/speed without consuming anything, so those
+        // upgrades were never paid for: taking the label off must return the one label
+        // item and nothing else.
+        let mut label = config();
+        label.set_amount(63);
+        label.set_speed(38);
+        assert_eq!(label.refund_items(), 1);
+    }
+
+    #[test]
+    fn a_paid_upgrade_is_refunded_with_the_label() {
+        let mut label = config();
+        label.pay_amount(3);
+        label.pay_speed(2);
+        assert_eq!(label.refund_items(), 6, "the label plus five upgrades");
+    }
+
+    #[test]
+    fn a_command_that_lowers_the_count_below_what_was_paid_refunds_only_what_stays() {
+        let mut label = config();
+        label.pay_amount(5);
+        label.set_amount(2);
+        assert_eq!(
+            label.paid_amount, 2,
+            "the paid count follows the label down"
+        );
+        assert_eq!(label.refund_items(), 3);
+    }
+
+    #[test]
+    fn an_old_text_without_paid_counters_keeps_its_upgrades_refundable() {
+        // 0.2.0 wrote only `amount=`/`speed=`; those upgrades were paid for by the
+        // player before the command could set them, so an old save stays refundable.
+        let label = LabelConfig::decode("mode=blacklist\nkind=normal\namount=4\nspeed=1\n")
+            .expect("a 0.2.0 label text");
+        assert_eq!(label.amount_upgrades, 4);
+        assert_eq!(label.paid_amount, 4);
+        assert_eq!(label.paid_speed, 1);
+        assert_eq!(label.refund_items(), 6);
+    }
+
+    #[test]
+    fn an_eye_reaches_the_labelled_block_it_touches_but_not_one_across_the_room() {
+        let eye = [0.5, 65.62, 0.5];
+        assert!(within_reach(eye, [0, 64, 0], 4.5));
+        assert!(within_reach(eye, [4, 64, 0], 4.5));
+        assert!(!within_reach(eye, [5, 64, 0], 4.5));
+    }
+
+    #[test]
+    fn the_list_is_paged_so_a_large_level_never_floods_the_chat() {
+        assert_eq!(LIST_PAGE_SIZE, 16);
+        assert_eq!(list_page(0, 0), (0, 0));
+        assert_eq!(list_page(10, 0), (0, 10));
+        assert_eq!(list_page(100, 0), (0, 16));
+        assert_eq!(list_page(100, 1), (16, 32));
+        assert_eq!(list_page(100, 6), (96, 100));
+        assert_eq!(list_page(100, 7), (100, 100));
+        assert_eq!(list_page(100, 9_000), (100, 100), "past the end is empty");
+    }
+
+    #[test]
+    fn the_command_lists_one_page_at_a_time() {
+        let parse = |line: &str| Command::parse(&line.split_whitespace().collect::<Vec<_>>());
+        assert_eq!(
+            parse("transfer_labels list 2"),
+            Ok(Command::List { page: 1 })
+        );
+        assert_eq!(
+            parse("transfer_labels list"),
+            Ok(Command::List { page: 0 }),
+            "no number is the first page"
+        );
+        assert!(parse("transfer_labels list 0").is_err());
+        assert!(parse("transfer_labels list 2 3").is_err());
+    }
+
     #[test]
     fn the_entry_count_defaults_to_one() {
         assert_eq!(
@@ -1072,6 +1378,121 @@ mod tests {
                 item: "minecraft:dirt".to_owned(),
                 count: 1
             })
+        );
+    }
+
+    // --- the insert label (slice 2, 2026-11-21) ---
+
+    #[test]
+    fn the_two_label_items_name_the_two_flows() {
+        assert_eq!(
+            LabelFlow::of_item(EXTRACT_LABEL_ITEM),
+            Some(LabelFlow::Extract)
+        );
+        assert_eq!(
+            LabelFlow::of_item(INSERT_LABEL_ITEM),
+            Some(LabelFlow::Insert)
+        );
+        assert_eq!(
+            LabelFlow::of_item("minecraft:chest"),
+            None,
+            "a chest is not a label item"
+        );
+        for flow in [LabelFlow::Extract, LabelFlow::Insert] {
+            assert_eq!(
+                LabelFlow::of_item(flow.item_id()),
+                Some(flow),
+                "{} names its own item",
+                flow.name()
+            );
+            assert_eq!(LabelFlow::parse(flow.name()), Some(flow), "{}", flow.name());
+        }
+        assert_eq!(LabelFlow::parse("sideways"), None);
+    }
+
+    #[test]
+    fn a_fresh_label_of_either_item_extracts_until_it_is_told_otherwise() {
+        assert_eq!(LabelConfig::default().flow, LabelFlow::Extract);
+        assert_eq!(LabelConfig::of(LabelFlow::Insert).flow, LabelFlow::Insert);
+        assert_eq!(
+            LabelConfig::of(LabelFlow::Insert).interval_ticks(),
+            20,
+            "the insert label moves at the same rate"
+        );
+        assert_eq!(
+            LabelConfig::of(LabelFlow::Insert).transfer_amount(),
+            1,
+            "and the same amount"
+        );
+    }
+
+    #[test]
+    fn an_insert_label_takes_from_the_neighbour_and_gives_to_the_labelled_block() {
+        let key = LabelKey {
+            pos: [10, 64, -3],
+            face: Face::Up,
+        };
+        let (source, sink) = key.endpoints(LabelFlow::Extract);
+        assert_eq!(
+            source,
+            Endpoint {
+                pos: [10, 64, -3],
+                face: Face::Up
+            },
+            "an extract label pulls from the block it is stuck to"
+        );
+        assert_eq!(
+            sink,
+            Endpoint {
+                pos: [10, 65, -3],
+                face: Face::Down
+            },
+            "and pushes into the block across the face"
+        );
+        let (source, sink) = key.endpoints(LabelFlow::Insert);
+        assert_eq!(
+            source,
+            Endpoint {
+                pos: [10, 65, -3],
+                face: Face::Down
+            },
+            "an insert label pulls from the block across the face"
+        );
+        assert_eq!(
+            sink,
+            Endpoint {
+                pos: [10, 64, -3],
+                face: Face::Up
+            },
+            "and pushes into the block it is stuck to"
+        );
+    }
+
+    #[test]
+    fn a_label_saves_its_flow_and_an_old_text_reads_as_extract() {
+        let mut label = LabelConfig::of(LabelFlow::Insert);
+        label.amount_upgrades = 2;
+        let back = LabelConfig::decode(&label.encode()).expect("its own text decodes");
+        assert_eq!(back.flow, LabelFlow::Insert);
+        assert_eq!(back.amount_upgrades, 2, "the rest still round-trips");
+        let old = LabelConfig::decode("mode=blacklist\nkind=normal\namount=4\nspeed=1\n")
+            .expect("a 0.2.1 text");
+        assert_eq!(
+            old.flow,
+            LabelFlow::Extract,
+            "a label saved before the insert label existed is an extract label"
+        );
+    }
+
+    #[test]
+    fn a_removal_hands_back_the_item_that_was_attached() {
+        assert_eq!(
+            LabelConfig::of(LabelFlow::Extract).refund_item(),
+            EXTRACT_LABEL_ITEM
+        );
+        assert_eq!(
+            LabelConfig::of(LabelFlow::Insert).refund_item(),
+            INSERT_LABEL_ITEM
         );
     }
 }

@@ -6,7 +6,7 @@
 #
 # Cargo's name and version are not the mod's identity: horizon-mod.toml is.
 name = "horizon-transfer-labels"
-version = "0.2.0"
+version = "0.2.2"
 edition = "2024"
 license = "MIT"
 description = "Transfer Labels for Horizon: a label on a block face moves items between two containers"

@@ -24,8 +24,8 @@ use mod_api::{
 };
 
 use crate::runtime::{
-    AMOUNT_UPGRADES, Command, Face, FilterEntry, LABEL_ITEM, LabelConfig, LabelKey, LabelStore,
-    SPEED_UPGRADES, Slot,
+    AMOUNT_UPGRADES, Command, Face, FilterEntry, LIST_PAGE_SIZE, LabelConfig, LabelFlow, LabelKey,
+    LabelStore, SPEED_UPGRADES, Slot, list_page, within_reach,
 };
 
 /// The command root, as the command tree and `/transfer_labels …` spell it.
@@ -33,6 +33,10 @@ const COMMAND: &str = "transfer_labels";
 
 /// How many label items one removal may hand back at most (`1 + 63 + 38`).
 const MAX_GIVEN: u32 = 1 + AMOUNT_UPGRADES + SPEED_UPGRADES;
+
+/// The reach a player with no `minecraft:block_interaction_range` attribute is treated as
+/// having: vanilla's 4.5 blocks.
+const REACH_FALLBACK: f64 = 4.5;
 
 /// What one stack gives back when the game has no answer for the item's own limit.
 const FALLBACK_MAX_STACK: u32 = 64;
@@ -45,7 +49,7 @@ const USAGES: [&str; 9] = [
     "transfer_labels info <pos:block_pos> <face:word>",
     "transfer_labels filter <pos:block_pos> <face:word> <mode:word>",
     "transfer_labels type <pos:block_pos> <face:word> <kind:word>",
-    "transfer_labels entry <pos:block_pos> <face:word> <slot:integer> <item:word> [count:integer]",
+    "transfer_labels entry <pos:block_pos> <face:word> <slot:integer> <item:id> [count:integer]",
     "transfer_labels clear <pos:block_pos> <face:word> <slot:integer>",
     "transfer_labels amount <pos:block_pos> <face:word> <amount:integer>",
     "transfer_labels speed <pos:block_pos> <face:word> <speed:integer>",
@@ -228,20 +232,22 @@ fn tick_level(host: &mut dyn ServerHost, level: LevelRef) {
     }
 }
 
-/// One label's activation: the labelled block's handler is the source, the block across the
-/// face is the destination, and the move is one transaction, so an item the destination refuses
-/// stays in its slot and nothing is lost.
+/// One label's activation: the label's flow names which of its two blocks is the source
+/// and which the destination, and the move is one transaction, so an item the
+/// destination refuses stays in its slot and nothing is lost.
 fn move_once(host: &mut dyn ServerHost, level: LevelRef, key: LabelKey, label: &LabelConfig) {
-    let target = key.target();
-    if !level.is_loaded(&*host, key.pos) || !level.is_loaded(&*host, target) {
+    let (source_at, sink_at) = key.endpoints(label.flow);
+    if !level.is_loaded(&*host, source_at.pos) || !level.is_loaded(&*host, sink_at.pos) {
         return;
     }
-    let from_face = Some(direction(key.from_face()));
-    let to_face = Some(direction(key.to_face()));
-    let Some(source) = level.capability(host, &ITEMS, key.pos, from_face) else {
+    let Some(source) =
+        level.capability(host, &ITEMS, source_at.pos, Some(direction(source_at.face)))
+    else {
         return;
     };
-    let Some(destination) = level.capability(host, &ITEMS, target, to_face) else {
+    let Some(destination) =
+        level.capability(host, &ITEMS, sink_at.pos, Some(direction(sink_at.face)))
+    else {
         return;
     };
     let slots = slots_of(host, &source);
@@ -331,8 +337,9 @@ fn face_of(normal: [i32; 3]) -> Option<Face> {
 // Attaching and removing (`TransferLabelItem.useOn`, `LabelBlock.remove`)
 // ---------------------------------------------------------------------------
 
-/// A label was placed with the label item in hand: it sticks to that block face and one item is
-/// used up. Returns whether the click was the mod's, so the caller cancels it.
+/// A label was placed with a label item in hand: it sticks to that block face, moves items
+/// the way that item's flow says, and one item is used up. Returns whether the click was
+/// the mod's, so the caller cancels it.
 fn attach(host: &mut dyn ServerHost, click: &BlockClick<'_>) -> bool {
     let Some(player) = host.player(click.player) else {
         return false;
@@ -340,9 +347,9 @@ fn attach(host: &mut dyn ServerHost, click: &BlockClick<'_>) -> bool {
     let Some(stack) = click.stack else {
         return false;
     };
-    if stack.item().id(&*host) != LABEL_ITEM {
+    let Some(flow) = LabelFlow::of_item(&stack.item().id(&*host)) else {
         return false;
-    }
+    };
     let Some(face) = face_of(click.hit.face) else {
         return false;
     };
@@ -372,7 +379,7 @@ fn attach(host: &mut dyn ServerHost, click: &BlockClick<'_>) -> bool {
         );
         return true;
     }
-    store.insert(key, LabelConfig::default());
+    store.insert(key, LabelConfig::of(flow));
     if !write_labels(host, &store) {
         return false;
     }
@@ -387,11 +394,15 @@ fn attach(host: &mut dyn ServerHost, click: &BlockClick<'_>) -> bool {
         host,
         player,
         format!(
-            "Transfer label attached to the {} face of {}, {}, {}.",
+            "Transfer label attached to the {} face of {}, {}, {} (it {} items).",
             face.name(),
             key.pos[0],
             key.pos[1],
-            key.pos[2]
+            key.pos[2],
+            match flow {
+                LabelFlow::Extract => "takes items out of that block",
+                LabelFlow::Insert => "puts items into that block",
+            }
         ),
     );
     true
@@ -418,8 +429,9 @@ fn consume_one(host: &mut dyn ServerHost, player: PlayerRef, hand: Hand) -> bool
     matches!(living.set_hand_item(host, hand, left), Ok(true))
 }
 
-/// A label was hit with the label item in hand: it comes off, with the copies its amount and
-/// speed upgrades stood for. Returns whether the click was the mod's.
+/// A label was hit with a label item in hand: it comes off, with the copies its amount and
+/// speed upgrades stood for, as the item it was attached with. Returns whether the click was
+/// the mod's.
 fn remove_clicked(host: &mut dyn ServerHost, pos: [i32; 3], face: [i32; 3]) -> bool {
     let Some(player) = host.players().acting_player() else {
         return false;
@@ -430,7 +442,7 @@ fn remove_clicked(host: &mut dyn ServerHost, pos: [i32; 3], face: [i32; 3]) -> b
     let Some(held) = living.hand_item(&*host, Hand::Main) else {
         return false;
     };
-    if held.item().id(&*host) != LABEL_ITEM {
+    if LabelFlow::of_item(&held.item().id(&*host)).is_none() {
         return false;
     }
     let Some(face) = face_of(face) else {
@@ -444,8 +456,8 @@ fn remove_clicked(host: &mut dyn ServerHost, pos: [i32; 3], face: [i32; 3]) -> b
     if !write_labels(host, &store) {
         return false;
     }
-    let back = 1 + label.amount_upgrades + label.speed_upgrades;
-    let given = give_labels(host, player, back);
+    let back = label.refund_items();
+    let given = give_labels(host, player, label.refund_item(), back);
     tell(
         host,
         player,
@@ -460,11 +472,11 @@ fn remove_clicked(host: &mut dyn ServerHost, pos: [i32; 3], face: [i32; 3]) -> b
     true
 }
 
-/// Gives up to `count` label items to `player`, one stack at a time, and answers how many went
-/// out. The retired helper gave only what fitted and left the rest nowhere; `/give`'s own path
-/// throws what does not fit, which is what a removal now does.
-fn give_labels(host: &mut dyn ServerHost, player: PlayerRef, count: u32) -> u32 {
-    let Some(key) = item_key(&*host, LABEL_ITEM) else {
+/// Gives up to `count` items of `item` to `player`, one stack at a time, and answers how many
+/// went out. The retired helper gave only what fitted and left the rest nowhere; `/give`'s own
+/// path throws what does not fit, which is what a removal now does.
+fn give_labels(host: &mut dyn ServerHost, player: PlayerRef, item: &str, count: u32) -> u32 {
+    let Some(key) = item_key(&*host, item) else {
         return 0;
     };
     let per_stack = host
@@ -534,7 +546,7 @@ fn argument_words(arguments: &[mod_api::CommandArgument]) -> Vec<String> {
 /// Runs one parsed `/transfer_labels …`.
 fn run_command(host: &mut dyn ServerHost, player: PlayerRef, command: Command) {
     match command {
-        Command::List => list(host, player),
+        Command::List { page } => list(host, player, page),
         Command::Info { key } => info(host, player, key),
         Command::Remove { key } => remove_by_command(host, player, key),
         Command::Filter { key, mode } => edit(host, player, key, |label| label.mode = mode),
@@ -548,12 +560,10 @@ fn run_command(host: &mut dyn ServerHost, player: PlayerRef, command: Command) {
             label.entries[slot] = Some(FilterEntry { item, count });
         }),
         Command::Clear { key, slot } => edit(host, player, key, |label| label.entries[slot] = None),
-        Command::Amount { key, amount } => edit(host, player, key, |label| {
-            label.amount_upgrades = amount.min(AMOUNT_UPGRADES);
-        }),
-        Command::Speed { key, speed } => edit(host, player, key, |label| {
-            label.speed_upgrades = speed.min(SPEED_UPGRADES);
-        }),
+        Command::Amount { key, amount } => {
+            edit(host, player, key, |label| label.set_amount(amount))
+        }
+        Command::Speed { key, speed } => edit(host, player, key, |label| label.set_speed(speed)),
     }
 }
 
@@ -564,6 +574,10 @@ fn edit(
     key: LabelKey,
     change: impl FnOnce(&mut LabelConfig),
 ) {
+    if !may_change_label(host, player, key) {
+        tell(host, player, out_of_reach(key));
+        return;
+    }
     let mut store = read_labels(host);
     let Some(label) = store.get_mut(&key) else {
         tell(host, player, missing(key));
@@ -578,13 +592,17 @@ fn edit(
 
 /// Takes a label off and hands its items back, without touching the block.
 fn remove_by_command(host: &mut dyn ServerHost, player: PlayerRef, key: LabelKey) {
+    if !may_change_label(host, player, key) {
+        tell(host, player, out_of_reach(key));
+        return;
+    }
     let mut store = read_labels(host);
     let Some(label) = store.remove(&key) else {
         tell(host, player, missing(key));
         return;
     };
-    let back = 1 + label.amount_upgrades + label.speed_upgrades;
-    let given = give_labels(host, player, back);
+    let back = label.refund_items();
+    let given = give_labels(host, player, label.refund_item(), back);
     if write_labels(host, &store) {
         tell(
             host,
@@ -597,27 +615,39 @@ fn remove_by_command(host: &mut dyn ServerHost, player: PlayerRef, key: LabelKey
     }
 }
 
-/// Every label in the level, one line each.
-fn list(host: &mut dyn ServerHost, player: PlayerRef) {
+/// One page of the level's labels, at most `LIST_PAGE_SIZE` lines, so a level with any
+/// number of labels never floods the chat. A page past the end says so instead of printing.
+fn list(host: &mut dyn ServerHost, player: PlayerRef, page: usize) {
     let store = read_labels(host);
     if store.is_empty() {
         tell(host, player, "No transfer labels in this level.");
         return;
     }
+    let total = store.len();
+    let pages = total.div_ceil(LIST_PAGE_SIZE).max(1);
+    let (start, end) = list_page(total, page);
     tell(
         host,
         player,
-        format!("{} transfer labels in this level.", store.len()),
+        format!(
+            "{total} transfer labels in this level (page {} of {pages}).",
+            page.saturating_add(1).min(pages)
+        ),
     );
-    for key in store.keys().copied().collect::<Vec<_>>() {
-        if let Some(label) = store.get(&key) {
-            tell(host, player, describe(&key, label));
+    if start == end {
+        return;
+    }
+    let keys: Vec<LabelKey> = store.keys().copied().collect();
+    for key in &keys[start..end] {
+        if let Some(label) = store.get(key) {
+            tell(host, player, describe(key, label));
         }
     }
 }
 
 /// One label's fields, plus the level's game time and what its destination holds, so a harness
-/// can compare what moved with the ticks that passed.
+/// can compare what moved with the ticks that passed. The destination is the label's own block
+/// for an insert label, so it is read from the flow's endpoints, never assumed.
 fn info(host: &mut dyn ServerHost, player: PlayerRef, key: LabelKey) {
     let store = read_labels(host);
     let Some(label) = store.get(&key).cloned() else {
@@ -628,10 +658,9 @@ fn info(host: &mut dyn ServerHost, player: PlayerRef, key: LabelKey) {
     let ticks = level
         .and_then(|level| level.game_time(&*host))
         .unwrap_or(-1);
+    let (_, sink) = key.endpoints(label.flow);
     let dest = level
-        .and_then(|level| {
-            level.capability(host, &ITEMS, key.target(), Some(direction(key.to_face())))
-        })
+        .and_then(|level| level.capability(host, &ITEMS, sink.pos, Some(direction(sink.face))))
         .map(|handler| {
             (0..handler.size(host)).fold(0_u32, |total, index| {
                 total.saturating_add(handler.amount(host, index))
@@ -643,6 +672,32 @@ fn info(host: &mut dyn ServerHost, player: PlayerRef, key: LabelKey) {
         player,
         format!("{} ticks={ticks} dest={dest}", describe(&key, &label)),
     );
+}
+
+/// The access rule every label mutation shares: the player stands within block reach of the
+/// labelled block and is allowed to build there, so a label is not another player's to move,
+/// reconfigure or take with its refund from across the level. The click paths already carry
+/// these rules; the commands must ask them too.
+fn may_change_label(host: &mut dyn ServerHost, player: PlayerRef, key: LabelKey) -> bool {
+    if player.is_spectator(&*host) == Some(true) || player.may_build(&*host) == Some(false) {
+        return false;
+    }
+    let Some(eye) = player.entity().eye_position(&*host) else {
+        return false;
+    };
+    let reach = host
+        .living(player.entity())
+        .and_then(|living| living.attribute_value(&*host, "minecraft:block_interaction_range"))
+        .unwrap_or(REACH_FALLBACK);
+    within_reach(eye, key.pos, reach)
+}
+
+/// The line a refused mutation prints.
+fn out_of_reach(key: LabelKey) -> String {
+    format!(
+        "You are not within reach of the transfer label at {}, {}, {}.",
+        key.pos[0], key.pos[1], key.pos[2]
+    )
 }
 
 /// The line a command repeats for a label that is not there.
@@ -670,11 +725,12 @@ fn describe(key: &LabelKey, label: &LabelConfig) -> String {
         })
         .collect();
     format!(
-        "label {} at {},{},{} mode={} type={} amount={} speed={} interval={} per_op={} entries={}{}",
+        "label {} at {},{},{} flow={} mode={} type={} amount={} speed={} interval={} per_op={} entries={}{}",
         key.face.name(),
         key.pos[0],
         key.pos[1],
         key.pos[2],
+        label.flow.name(),
         label.mode.name(),
         label.kind.name(),
         label.amount_upgrades,
@@ -708,9 +764,23 @@ fn item_key(host: &dyn mod_api::Host, id: &str) -> Option<ItemKey> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Face, decode_store, direction, encode_store, face_of, member, stack_chunks};
-    use crate::runtime::{LabelConfig, LabelKey, LabelStore};
+    use super::{
+        Face, decode_store, describe, direction, encode_store, face_of, member, stack_chunks,
+    };
+    use crate::runtime::{LabelConfig, LabelFlow, LabelKey, LabelStore};
     use mod_api::{CommandArgument, CommandArgumentValue, Compound, Direction, Tag};
+
+    #[test]
+    fn a_labels_line_says_which_way_it_moves_items() {
+        let key = LabelKey {
+            pos: [1, 2, 3],
+            face: Face::Up,
+        };
+        let insert = describe(&key, &LabelConfig::of(LabelFlow::Insert));
+        assert!(insert.contains("flow=insert"), "{insert}");
+        let extract = describe(&key, &LabelConfig::default());
+        assert!(extract.contains("flow=extract"), "{extract}");
+    }
 
     #[test]
     fn a_block_position_spreads_back_over_three_words() {

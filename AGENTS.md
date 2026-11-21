@@ -24,9 +24,11 @@ ports/tools/build-slot.sh run --job sdk-tl --port ports/transfer_labels --step c
 - `cargo horizon-mod` fetches the pinned SDK into `.horizon/sdk/` (gitignored, never packed).
   `build` packs the `.hmod`; it does **not** compile against the game — that is
   `horizon-launcher native-build . --instance <instance> --trust-native-code`.
-- **`src/runtime.rs` is byte-identical to the retired bundle's `runtime.rs` and must stay so**: the
-  behaviour rules live there, `src/lib.rs` only converts SDK types to theirs. New rule → a test in
-  `runtime.rs`; new glue → a private fn and a test in `lib.rs`.
+- **`src/runtime.rs` is the pure rules and must stay pure** (no `mod_api` types, no host
+  handles). It started byte-identical to the retired bundle's `runtime.rs`; since the insert-label
+  slice (0.2.2) it also carries that family's rules — a new family adds rules here, it never
+  rewrites an existing one, and every rule has a test. `src/lib.rs` only converts SDK types to
+  theirs. New rule → a test in `runtime.rs`; new glue → a private fn and a test in `lib.rs`.
 - Only the API the SDK publishes: `cargo horizon-mod hooks <text>` finds the exact method; never
   guess a name, and record an API gap in `notes.md` instead of faking one.
 - The delivered package is `transfer_labels.hmod` **in the port root**, never in `target/`;

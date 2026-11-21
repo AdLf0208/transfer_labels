@@ -1,7 +1,8 @@
 {
   "icon": "transfer_labels:itemstack_extract_transfer_label",
   "items": [
-    "transfer_labels:itemstack_extract_transfer_label"
+    "transfer_labels:itemstack_extract_transfer_label",
+    "transfer_labels:itemstack_insert_transfer_label"
   ],
   "title": "itemGroup.transfer_labels"
 }

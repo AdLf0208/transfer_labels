@@ -1,25 +1,30 @@
 id = "transfer_labels"
 name = "Transfer Labels"
-version = "0.2.0"
+version = "0.2.2"
 description = """A port of Transfer Labels (https://github.com/Buuz135/Transfer-Labels, MIT, by Buuz135)
-for Horizon. A label is an item stuck to one block face: it moves items from the block behind that
-face into the block across it. This slice is the item-stack extract label. It is attached by
-right-clicking a block face with the label in hand, one item used up, and removed by left-clicking
-the labelled face with the label in hand, which returns the item and the copies its amount and speed
-upgrades stand for; cancelling the click is what keeps a chest from opening and the block from
-breaking. Each label acts on the level's tick once every (20 - min(speed, 38) / 2) game ticks (one
-item every 20 ticks with no upgrade, one a tick at 38 speed upgrades) and moves 1 + amount items per
-activation (1 to 64), one transition per label, so an item the destination refuses stays in its slot.
-The filter is a whitelist or a blacklist (blacklist is the default, as upstream) with 20 slots and
-the normal (same item id), mod (same namespace) and regulating (keep N at the destination, at most
-four per operation) kinds. Labels are level state, saved with the dimension's attachments, so they
-survive a save and a reload. /transfer_labels list|info|filter|type|entry|clear|amount|speed|remove
-configures a label by position and face, standing in for the GUI this slice does not carry. Not yet
-ported: the tag and exact_count filter kinds (refused, not silently ignored); the label's menu and
-screen, so the command sets upgrade counts without the upgrade items in slots; the insert label and
-the four fluid labels; the client billboard and its own click shape; removing a label when its block
-is broken; and comparing item components in the filter. MIT: the original copyright and permission
-notices travel inside the package as LICENSE and LICENSE-NOTICE.md."""
+for Horizon. A label is an item stuck to one block face: it joins the block behind that face and the
+block across it, and moves items between them on the level's tick. This package carries both
+item-stack labels. The extract label pulls from the block it is stuck to into the block across the
+face; the insert label is the same pair the other way round, filling the block it is stuck to. A
+label is attached by right-clicking a block face with it in hand, one item used up, and removed by
+left-clicking the labelled face with a label in hand, which returns the item it was attached with
+and the copies its amount and speed upgrades stand for; cancelling the click is what keeps a chest
+from opening and the block from breaking. Each label acts once every (20 - min(speed, 38) / 2) game
+ticks (one item every 20 ticks with no upgrade, one a tick at 38 speed upgrades) and moves 1 +
+amount items per activation (1 to 64), one transition per label, so an item the destination refuses
+stays in its slot. The filter is a whitelist or a blacklist (blacklist is the default, as upstream)
+with 20 slots and the normal (same item id), mod (same namespace) and regulating (keep N at the
+destination, at most four per operation) kinds. Labels are level state, saved with the dimension's
+attachments, so a label and its direction survive a save and a reload.
+/transfer_labels list|info|filter|type|entry|clear|amount|speed|remove configures a label by
+position and face, standing in for the GUI this slice does not carry. Recipes: the extract and
+insert labels (2 each, hopper / wooden chest / redstone in opposite order) and the two shapeless
+conversions between them. Not yet ported: the four fluid labels; the tag and exact_count filter
+kinds (refused, not silently ignored); the label's menu and screen, so the command sets upgrade
+counts without the upgrade items in slots; the label accessor; the client billboard and its own
+click shape; removing a label when its block is broken; and comparing item components in the
+filter. MIT: the original copyright and permission notices travel inside the package as LICENSE and
+LICENSE-NOTICE.md."""
 authors = ["Buuz135", "AdLf0208"]
 # A native mod: Rust in src/, compiled by the launcher against the game build [native] pins,
 # beside data/ and assets/. The id is the resource namespace and the only identity: Cargo's
@@ -29,10 +34,10 @@ api = "0.2"
 # installation, so a LAN host or a single-player world needs both. A dedicated server is "server".
 side = "both"
 # The one shared value every manifest carries ("May add blocks, items, mob effects and entity
-# types"): the label item, its model, texture, recipe, lang line and tag ship in this package.
+# types"): the two label items, their models, textures, recipes, lang lines and tag ship here.
 capabilities = ["registries"]
 
 [native]
 game = "26.3"
-horizon = "0b14f8acfd97fa2c750e42795249dcc981178ca4"
+horizon = "0a875da91dbb0fdcb7ba8c42c11341aa229af51a"
 mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"

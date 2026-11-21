@@ -475,3 +475,238 @@ retired bundle under `retired-hnmod-0.1.0/`.
 > `runtime.rs` and its 28 rules are unchanged, with 9 glue tests beside them. **Version 0.2.0.**
 > MIT; the original copyright and permission notices travel inside the package as `LICENSE` and
 > `LICENSE-NOTICE.md`.
+
+## Review fixes (2026-11-18) — registry source review #1200
+
+Skills: superpowers/using-superpowers,systematic-debugging,test-driven-development,verification-before-completion; BeautifulRust/rust-best-practices
+
+File: `var/review-all/1200-transfer_labels.md`. Package **0.2.1**, `transfer_labels.hmod` 38,328 B,
+sha256 `0df45ce61119e36f3ec68b4aa5a8582412c162350100ab2f0279718506956a0e`.
+
+1. **`src/lib.rs:551` level-0 amount/speed edits set refundable upgrades without consuming items,
+   and the refunds at `:447`/`:586` minted label items.** `LabelConfig` now carries
+   `paid_amount`/`paid_speed` beside the effective counts: the command's `set_amount`/`set_speed`
+   change only the effective value (and pull the paid count down with it), `pay_amount`/
+   `pay_speed` are the only way to make an upgrade refundable, and `refund_items()` returns
+   `1 + min(effective, paid)` per kind. An older text with no paid lines decodes as
+   "all upgrades were paid" (backwards compatible). Pinned by
+   `only_upgrades_that_were_paid_for_come_back_with_the_label`,
+   `a_paid_upgrade_is_refunded_with_the_label`,
+   `a_command_that_lowers_the_count_below_what_was_paid_refunds_only_what_stays` and
+   `an_old_text_without_paid_counters_keeps_its_upgrades_refundable`.
+2. **`src/lib.rs:539` any player could remove or reconfigure another label by arbitrary
+   coordinates and take its refund.** All mutations (`edit`, `remove_by_command`) now pass
+   `may_change_label`: not a spectator, `player_may_build`, and the player's eye within
+   `minecraft:block_interaction_range` of the label's block (`runtime::within_reach`). Pinned by
+   `an_eye_reaches_the_labelled_block_it_touches_but_not_one_across_the_room` and the in-game
+   phase **G2** (an amount edit from ten blocks away is refused and the value is unchanged).
+3. **`src/lib.rs:612` `list` emitted one message per label in the level.** The command now takes an
+   optional 1-based page (`list [page]`), prints at most `LIST_PAGE_SIZE = 16` lines plus a
+   `page N of M` header, and a page past the end prints no entries. Pinned by
+   `the_list_is_paged_so_a_large_level_never_floods_the_chat` and
+   `the_command_lists_one_page_at_a_time` (parse), and by in-game phase **G3**. `cargo test`:
+   **44 passed**.
+
+**Found by the in-game leg (fixed here, not in the reviewer's list).**
+
+- `transfer_labels entry … <item:word>` could not be typed: a `word` argument stops before `:` in
+  `minecraft:cobblestone` ("Expected whitespace to end one argument"), so every entry edit failed.
+  The argument is now `<item:id>` (the SDK's namespaced-id kind), which accepts the canonical id.
+- `label_cmd` now echoes the command's own reply into the transcript, so each edit is visible in
+  the evidence log.
+
+In-game: `PASS` + `E2E EXIT:0` (`ports/_shared/evidence/transfer_labels-e2e/e2e-launcher.log`),
+control `EXIT:1`. Phases **G2** (an amount edit from ten blocks away answers *You are not within
+reach* and changes nothing) and **G3** (`list` prints `5 transfer labels in this level (page 1 of
+1)`) are the new proof.
+
+## Slice 2 — the item-stack insert label (0.2.2, 2026-11-21)
+
+**Gap line it comes from** (`## Things a next slice should pick up`, item 1, and the migration
+section's gap 3): *"The insert label and the four fluid labels (`native_fluid_tanks` /
+`native_move_fluids`, `fluidTransferMultiplier = 100` mB per item amount)."* The insert label is the
+first half of that line and the other half of the mod's core mechanic (upstream ships
+`ItemStackExtractTransferLabelItem` **and** `ItemStackInsertTransferLabelItem`, `FINDINGS.md` §2.3);
+the fluid labels are the other family and are **not** in this slice.
+
+**Class + tier unchanged: content / machines.** The insert label is the same container-capability
+work as the extract label on the level's tick, with the source and destination swapped — no new
+machine, menu or deep-tier surface. (The brief's "fits the tier (`deep`)" line is a template slip:
+the ledger row, `notes.md` and `horizon-mod.toml` say **machines** for `transfer_labels`, and the
+port has never had a `deep` feature.)
+
+**What changed**
+
+| | |
+|---|---|
+| `src/runtime.rs` | `LabelFlow` (`Extract`/`Insert`) with `name`/`parse`/`item_id`/`of_item`; `EXTRACT_LABEL_ITEM` + `INSERT_LABEL_ITEM` (the retired single `LABEL_ITEM` is gone); `Endpoint` and `LabelKey::endpoints(flow)` — upstream's `ItemFilter.work`, which swaps source and destination for the insert item and nothing else; `LabelConfig::of(flow)` and `refund_item()`; a `flow` field saved as `flow=extract|insert`, **defaulting to extract for a text written before this version** so a 0.2.1 world loads unchanged |
+| `src/lib.rs` | attach takes the flow from the item that was clicked; a removal hands back **the item that was attached** (`refund_item`) and accepts either label in hand; the tick and `info`'s `dest` read the flow's endpoints instead of assuming extract; `describe` prints `flow=` |
+| `assets/`, `data/` | `itemstack_insert_transfer_label`: item definition, model, the jar's texture (byte-identical, `ecc6c58e…`), lang line, creative-tab entry, item declaration (paper template, stack 64), its shaped recipe, and the **two shapeless conversions** |
+| `tools/craft_labels.py` | new: crafts all four carried recipes in a real crafting table and asserts output id + count and that the ingredients were consumed; a control grid makes nothing; `NEGATIVE=1` flips the first count |
+| `tools/e2e.sh` | `--offscreen` (the recipe phase needs a menu), phase **I** (insert direction, its differential and the extract control in the same geometry), phase **J** (recipes), `INSERT_SELFTEST=1`, and the package bytes/sha printed at the top of the log |
+| `tools/parse_info.py` | parses the new `flow=` field |
+| `horizon-mod.toml`, `Cargo.toml` | `0.2.2`; pin → `0a875da91dbb0fdcb7ba8c42c11341aa229af51a` |
+
+`src/runtime.rs` at 0.2.1 is **not** byte-identical to the retired bundle any more, and that is the
+one deliberate departure from the port's own `AGENTS.md` line: a new family needs new rules. The
+existing rules are untouched — `diff -u retired-…/runtime.rs src/runtime.rs` removes only the retired
+`LABEL_ITEM` const, the encode format string (the `flow=` argument reflowed with it) and the
+review-1 `Command::List { page }`; everything else is added
+(`evidence/transfer_labels/slice2-runtime-diff.log`).
+
+### Red proof (TDD, before the rules existed)
+
+`evidence/transfer_labels/sdk-test-red.log` — the five new tests were added first, with the API
+declared as `todo!()`:
+
+```
+test result: FAILED. 44 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out
+
+thread 'runtime::tests::the_two_label_items_name_the_two_flows' panicked at src/runtime.rs:190:9:
+not yet implemented
+thread 'runtime::tests::a_fresh_label_of_either_item_extracts_until_it_is_told_otherwise' panicked at src/runtime.rs:270:9:
+not yet implemented
+thread 'runtime::tests::a_label_saves_its_flow_and_an_old_text_reads_as_extract' panicked at src/runtime.rs:270:9:
+not yet implemented
+thread 'runtime::tests::a_removal_hands_back_the_item_that_was_attached' panicked at src/runtime.rs:270:9:
+not yet implemented
+thread 'runtime::tests::an_insert_label_takes_from_the_neighbour_and_gives_to_the_labelled_block' panicked at src/runtime.rs:529:9:
+not yet implemented
+```
+
+The rules that made them green:
+
+- `an_insert_label_takes_from_the_neighbour_and_gives_to_the_labelled_block` — extract is
+  (labelled → neighbour), insert is the same pair swapped, per face.
+- `the_two_label_items_name_the_two_flows` — each item id maps to its flow and back; a chest is not
+  a label; `parse` refuses anything else.
+- `a_label_saves_its_flow_and_an_old_text_reads_as_extract` — `flow=insert` round-trips, and a
+  text with no `flow` line (a 0.2.1 save) decodes as extract.
+- `a_removal_hands_back_the_item_that_was_attached` — the refund is the attached item, not always
+  the extract label.
+- `tests::a_labels_line_says_which_way_it_moves_items` (glue) — `/transfer_labels info` prints
+  `flow=extract|insert`.
+
+`cargo test` after the rules: **50 passed, 0 failed** (`sdk-test.log`).
+
+### In-game evidence (launcher build at `0a875da`, `--offscreen`)
+
+`ports/_shared/evidence/transfer_labels-e2e/`, all four legs against the delivered bytes
+(`package: 45567 B sha256 0d1504ad…` is printed at the top of every log):
+
+| leg | result |
+|---|---|
+| `e2e-launcher.log` | **PASS + EXIT:0** — A–J |
+| `e2e-launcher-control.log` | the same Nightly **without** the package: `without the package: no label item, the block stayed minecraft:air` then FAIL + **EXIT:1** |
+| `e2e-launcher-selftest.log` | `SELFTEST=1` flips B's rate: `FAIL: selftest: 11 items moved, expected the wrong count` + **EXIT:1** |
+| `e2e-launcher-insert-selftest.log` | `INSERT_SELFTEST=1` flips I's direction: `FAIL: insert selftest: 11 items dropped, expected the wrong direction` + **EXIT:1** |
+
+`check-e2e-logs.py transfer_labels-e2e --strict` → `logs=4 ok=4`.
+
+What phase **I** proves (the new family), verbatim from the default log:
+
+```
+no label in this geometry: the lower holds 0, the upper 8
+insert: ticks 1719..1934, 11 items dropped into the labelled chest; the two chests still hold exactly 32 between them (19 + 13)
+extract label, same geometry, same fill: the upper chest still holds 8 and the lower 0
+```
+
+- the label on the **lower chest's top face** fills that chest from the chest across the face, at
+  one item per 20 ticks (`floor(T1/20) - floor(T0/20)`), and the pair's total is **exactly** 32 —
+  the assertion that fails on a lost or duplicated item;
+- with **no label** the same geometry moves nothing;
+- with an **extract** label in the same geometry and the same fill nothing moves either, because it
+  pulls from the (empty) labelled chest — so a port that ignored the flow fails one of the two.
+
+Phase **J** (every carried recipe, `RECIPES PASS`):
+
+```
+extract: redstone / chest / hopper -> {"count": 2, "item": "transfer_labels:itemstack_extract_transfer_label", "slot": 200}
+insert: hopper / chest / redstone -> {"count": 2, "item": "transfer_labels:itemstack_insert_transfer_label", "slot": 200}
+extract -> insert -> {"count": 1, "item": "transfer_labels:itemstack_insert_transfer_label", "slot": 200}
+insert -> extract -> {"count": 1, "item": "transfer_labels:itemstack_extract_transfer_label", "slot": 200}
+control: iron ingot where the hopper belongs -> null
+```
+
+and phase **H** adds `the insert label came back as flow=insert` after the save + relaunch, so the
+new saved field survives the attachment codec.
+
+### Coverage (parity rule)
+
+| family in the jar | state |
+|---|---|
+| item-stack **extract** label | **tested** — phases A, B, C, D, E, F, G, G2, G3, H (0.2.1) + the recipe in J |
+| item-stack **insert** label | **tested** — phases I (direction, rate, conservation, differential, extract control), H (`flow=insert` survives a relaunch), J (recipe) |
+| shaped recipe, extract | **tested** — J: 2 crafted, hopper + chest + redstone consumed |
+| shaped recipe, insert | **tested** — J: 2 crafted, the mirrored grid, ingredients consumed |
+| shapeless conversions (both ways) | **tested** — J: 1 crafted each, the input label consumed |
+| filter (whitelist/blacklist, normal/mod/regulating) | **tested** — C, F (0.2.1) |
+| amount / speed upgrades | **tested** — D, E (0.2.1) |
+| four **fluid** labels | **not ported** — next family; see the note below |
+| label menu + screen, upgrade slots as items, the whitelist button | **not ported** — no menu in this tier's slice; the command is the configuration path (gap 3) |
+| `tag` and `exact_count` filter kinds | **not ported** — no item-tag lookup helper at this pin; naming one is refused, not ignored (gap 4) |
+| `label_accessor` item | **not ported** — it only opens the GUI the port does not have |
+| client billboard + its own click shape (ray trace) | **not ported** — no per-position client shape for a non-block (gap 5) |
+| label removal when its block is broken | **not ported** — `block_changed` cleanup is still a gap (gap 6) |
+| item **components** in the filter | **not ported** — the filter compares the item id (gap 7) |
+
+### Upstream defect fixed
+
+The jar's two conversion recipes have their **file names swapped**: 
+`data/transfer_labels/recipe/itemstack_extract_label_to_itemstack_insert_label.json` contains
+`ingredients: [itemstack_insert…] → result: itemstack_extract…` (and the other file the reverse), so
+a reader (and the recipe id) says the opposite of what the file does. The port carries both
+conversions **named after what they do** (`itemstack_extract_label_to_itemstack_insert_label.json`
+is extract → insert). Nothing a player sees changes — both directions existed in the jar and both
+are crafted in J — so this is a naming repair, not a behaviour change; it is worth an upstream note
+but not a bug report.
+
+### Harness facts this slice cost (keep them)
+
+1. **`look-at block … FACE` fails when the face is not visible.** A label on the *bottom* face of a
+   chest at y=102 cannot be attached from a player standing on a floor at y=100 (the eye at 102.62 is
+   above the face plane), and `look-at-block` exits 1 instead of aiming at a side. The insert phase
+   therefore puts the label on the **top** face of the lower chest and the source chest above it —
+   the face the harness can always click (`attach_top`).
+2. **Two container reads are not atomic.** With one item moving every 20 ticks, reading the source
+   and then the destination can straddle an activation and show the item in neither. `stable_pair`
+   reads sink, source, sink and only trusts the pair when the two sink reads agree; conservation is
+   then exact (the first version read each once and reported 31 of 32 twice).
+3. **A rate window must not end on the label's own boundary.** The command runs before the level
+   tick, so an `info` read at `gameTime % 20 == 0` misses that tick's activation while the formula
+   counts it (measured: `dest 12` at `ticks=1880` with 13 due). `read_off_boundary` re-reads until
+   both ends are off the multiple; the formula stays exact.
+4. **The mod's own right-click hook eats a held label when a menu is opened.** `ctl interact` on a
+   crafting table right-clicks *with the held item*, so a label in hand is attached to the table and
+   consumed — the craft table's first attempt failed with an empty inventory. `craft_labels.py`
+   selects an empty hotbar slot before opening the table.
+5. **`--offscreen` is required for the recipe phase** (a headless client never opens a screen);
+   the rest of the scenario is unaffected by it.
+
+The four **fluid** labels stay out of this slice: the pin's fluid write is not trustworthy —
+`enderstorage` measured at `0b14f8a` that a bucket fill is consumed while a `FluidTanks` insert over
+`horizon:fluids` reads back empty — so a fluid-label slice must re-measure that seam before it
+promises a moving tank. Recorded as the next family, not attempted here.
+
+### Verification of this slice
+
+Skills: superpowers/using-superpowers,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
+
+| Step | Command | Log | Result |
+|---|---|---|---|
+| red | `cargo test --offline` with the new tests and `todo!()` rules | `sdk-test-red.log` | 44 passed, **5 failed** (`not yet implemented`) |
+| tests | `cargo test --offline` | `sdk-test.log` | **50 passed**, 0 failed |
+| format | `cargo fmt --check` | `sdk-clippy.log` | `FMT_EXIT:0` |
+| lints | `cargo clippy --all-targets -- -D warnings` | `sdk-clippy.log` | `CLIPPY_EXIT:0`, 0 warnings |
+| build ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice, `cmp` | `sdk-build.log` | identical (`CMP_DELIVERED:0`), **45,567 B**, SHA-256 `0d1504ad…` |
+| registry check | `cargo horizon-mod check transfer_labels.hmod` | `sdk-check.log` | `0.2.2 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)` **EXIT 0** |
+| fits (pin) | `cargo horizon-mod fits transfer_labels.hmod --build 0a875da` | `sdk-fits.log` | `0a875da  made for`, EXIT 0 |
+| fits (other) | `cargo horizon-mod fits transfer_labels.hmod --build 0b14f8a` | `sdk-fits-other.log` | `0b14f8a  fits`, EXIT 0 |
+| data dialect | `python3 ports/tools/check_261_dialect.py transfer_labels.hmod` | — | 4 recipes, every one in the 26.3 dialect, exit 0 |
+| package gate | `python3 ports/tools/verify-sdk-package.py transfer_labels` | — | **1/1** (runtime byte-identical, no lock, 50 tests, 0 clippy, check+fits, skills) |
+| in game | `launcher-game.sh build` → `Compiling transfer_labels (1 of 1)`; four legs | `transfer_labels-e2e/*.log` | PASS/EXIT:0, control EXIT:1, SELFTEST EXIT:1, INSERT_SELFTEST EXIT:1, `--strict` 4/4 |
+| skills gate | `python3 ports/tools/check-skills.py --notes ports/transfer_labels` | — | `SKILLS GATE: PASS` |
+
+**Deliverable:** `transfer_labels.hmod` **45,567 B**, SHA-256
+`0d1504ad0a8324dd71da0ff97d88684ade73a1001547d79bb7a680eafe110e71`, declared version **0.2.2**,
+**24 entries**, no packed `Cargo.lock`, `LICENSE` + `LICENSE-NOTICE.md` inside.

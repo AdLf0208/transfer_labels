@@ -1,10 +1,41 @@
-# Validation — Transfer Labels slice 1
+# Validation — Transfer Labels
 
-> **History (retired `.hnmod` bundle).** Everything below was measured at Horizon `1d63e0a5` /
-> horizon-mixins `5a64af93` for the `.hnmod` container, which Horizon retired (#16941). The port is
-> now a flat SDK `.hmod` at `0b14f8a` / `e59da90`: see `notes.md`, **`## Migration to the SDK
-> format`**, for the current evidence (`evidence/transfer_labels/sdk-0b14f8a/`). The in-game runs
-> below remain the behaviour's proof until a launcher-built game exists here.
+> **Current: 0.2.2 (2026-11-21) — the item-stack insert label, and every carried recipe.** Measured
+> at the campaign pin **Horizon `0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** / horizon-mixins
+> `e59da9094f0c2fdda6c627fe9eff22dec6a906f0`, game 26.3, launcher 0.2.92. Delivered
+> `transfer_labels.hmod` **45,567 B**, SHA-256
+> `0d1504ad0a8324dd71da0ff97d88684ade73a1001547d79bb7a680eafe110e71`, **24 entries**, version
+> **0.2.2**, no packed `Cargo.lock`. Full detail in `notes.md`, **`## Slice 2`**.
+
+| Check | Command | Result |
+|---|---|---|
+| Red | `cargo test --offline` (tests first, rules as `todo!()`) | 44 passed, **5 failed** — `not yet implemented` (`sdk-test-red.log`) |
+| Runtime tests | `cargo test --offline` | **50 passed**, 0 failed (`sdk-test.log`) |
+| Formatting / lints | `cargo fmt --check`; `cargo clippy --all-targets -- -D warnings` | `FMT_EXIT:0`, `CLIPPY_EXIT:0`, 0 warnings (`sdk-clippy.log`) |
+| Build ×2 | `rm -f Cargo.lock && cargo horizon-mod build`, twice, `cmp` | identical, **45,567 B** `0d1504ad…` (`sdk-build.log`) |
+| Registry check | `cargo horizon-mod check transfer_labels.hmod` | `0.2.2 (native-mod, format native-1/0a875da…/e59da90…, for 26.3)`, **EXIT 0** (`sdk-check.log`) |
+| Fits, the pin | `cargo horizon-mod fits … --build 0a875da` | `0a875da  made for`, EXIT 0 (`sdk-fits.log`) |
+| Fits, another build | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  fits`, EXIT 0 (`sdk-fits-other.log`) |
+| Carried data | `python3 ports/tools/check_261_dialect.py transfer_labels.hmod` | 4 recipes in the 26.3 dialect, EXIT 0 (`dialect-check.log`) |
+| Package gate | `python3 ports/tools/verify-sdk-package.py transfer_labels` | **1/1** |
+| In game, default | `launcher-game.sh build` → `Compiling transfer_labels (1 of 1)`, then the e2e in a slot | **PASS + EXIT:0** (`transfer_labels-e2e/e2e-launcher.log`) |
+| In game, control | the same Nightly without the package | `without the package: no label item, the block stayed minecraft:air`, **FAIL + EXIT:1** |
+| In game, `SELFTEST=1` | flips phase B's rate | `FAIL: selftest: 11 items moved, expected the wrong count`, **EXIT:1** |
+| In game, `INSERT_SELFTEST=1` | flips phase I's direction | `FAIL: insert selftest: 11 items dropped, expected the wrong direction`, **EXIT:1** |
+| Log audit | `python3 ports/tools/check-e2e-logs.py transfer_labels-e2e --strict` | `logs=4 ok=4` |
+
+What the new phases prove, in numbers from the log: the insert label on the lower chest's top face
+dropped **11 items over 215 ticks** (`floor(T1/20) - floor(T0/20)`) into the labelled chest and the
+two chests still held **exactly 32** between them (19 + 13); the same geometry with no label moved
+nothing; the same geometry with an extract label moved nothing either. All four carried recipes
+crafted with their exact output id and count and their ingredients consumed, and a grid with an iron
+ingot in the hopper slot made nothing.
+
+> **History — 0.2.0/0.2.1 (`.hnmod` bundle and the SDK migration).** Everything below was measured at
+> Horizon `1d63e0a5` / horizon-mixins `5a64af93` for the retired `.hnmod` container (Horizon retired
+> it in #16941), or at `0b14f8a` for the first SDK package. It remains the record of slice 1 (the
+> extract label) and its review fixes; `notes.md` carries those runs under **`## Verification`**,
+> **`## Migration to the SDK format`** and **`## Review fixes (2026-11-18)`**.
 
 > **2026-11-12 (review repairs, PR #670).** The delivered bytes changed when the
 > MIT notices were added and `tools/package.sh` began stamping them itself: the
